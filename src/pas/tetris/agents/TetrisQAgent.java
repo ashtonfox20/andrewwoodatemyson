@@ -237,7 +237,7 @@ public class TetrisQAgent
         featureMatrix.set(0, 5, filledDensity);
         featureMatrix.set(0, 6, minoType);
 
-        System.out.println(featureMatrix);
+        // System.out.println(featureMatrix);
         
         // return features data
         return featureMatrix;
