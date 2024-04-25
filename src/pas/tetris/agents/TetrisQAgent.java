@@ -6,8 +6,9 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Random;
 import java.util.Arrays;
+import java.util.ArrayList;
 
-import edu.bu.battleship.utils.Coordinate;
+
 // JAVA PROJECT IMPORTS
 import edu.bu.tetris.agents.QAgent;
 import edu.bu.tetris.agents.TrainerAgent.GameCounter;
@@ -16,6 +17,8 @@ import edu.bu.tetris.game.Game.GameView;
 import edu.bu.tetris.game.minos.Mino;
 import edu.bu.tetris.linalg.Matrix;
 import edu.bu.tetris.nn.Model;
+import edu.bu.tetris.nn.Module;
+import edu.bu.tetris.utils.Coordinate;
 import edu.bu.tetris.nn.LossFunction;
 import edu.bu.tetris.nn.Optimizer;
 import edu.bu.tetris.nn.models.Sequential;
@@ -32,7 +35,7 @@ public class TetrisQAgent
 {
 
     public static final double EXPLORATION_PROB = 0.05;
-    public static int NUM_EXPLORED = 1;
+    public static int expeditionCount = 1;
 
     private Random random;
 
@@ -46,22 +49,13 @@ public class TetrisQAgent
 
     @Override
     public Model initQFunction() {
-        // build a single-hidden-layer feedforward network
-        // this example will create a 3-layer neural network (1 hidden layer)
-
-        final int inputSize = 8; // should equal the size of the input row-vector
-        final int hiddenDim = (int)Math.pow(inputSize, 2); // increasing this value will allow for more complex patterns to be learned but will also increase the risk of overfitting
-        final int outDim = 1; // always keep at 1
-
+        final int inputSize = 8; 
+        final int hiddenDim = (int)Math.pow(inputSize, 2); //danger variable >:)
+        final int outDim = 1; 
         Sequential qFunction = new Sequential();
         qFunction.add(new Dense(inputSize, hiddenDim));
-
-        // can experiment switching between the following to see which performs the best or maybe even multiple, i think Tahn is our best bet tho
-        qFunction.add(new Tanh());
-        //qFunction.add(new ReLU()); 
-        //qFunction.add(new Sigmoid()); 
+        qFunction.add(new ReLU()); //relu supremacy
         qFunction.add(new Dense(hiddenDim, outDim));
-
         return qFunction;
     }
 
@@ -82,160 +76,115 @@ public class TetrisQAgent
      */
     @Override
     public Matrix getQFunctionInput(final GameView game, final Mino potentialAction) {
-        Matrix gameMatrix = null; // init matrix var
-
-        // init feature matrix that will be returned with all the features of importance
+        Matrix grayGrid = null;
         Matrix featureMatrix = Matrix.zeros(1, 8);
-
-        // init features data (can add or remove certain features to see how it performs w/wo them)
-        int numHoles = 0; // number of empty spaces that have a filled space below them
-
-        int maxHeightBefore = 22; // height of the tallest column without accounting for the current mino placement, gives distance from the top
-        boolean mHBSet = false;
-
-        int maxHeightAfter = 22; // height of the tallest column accounting for the current mino placement, gives distance from the top
-        boolean mHASet = false;
-
-        int heightDelta = 0; // gives the delta in max height for the current mino placement
         
-        int bumpiness = 0; // sum of the absolute differences in height between adjacent columns
-        Integer[] colHeights = new Integer[10];
-
-        int emptyBelow = 0; // counts number of empty spaces below the highest placed mino for each column
-
-        int lowestEmptyY = -1; // y value of the lowest empty coordinate on the board
-
-        int minoType = -1; // gets the type of the mino to be placed next in int form
+        int holesOnBoard = 0;
+        int holesBeneath = 0;//how many fuckups i mean empty spaces are below a mino space
+        int minoShape = -1;
         Mino.MinoType curMino = potentialAction.getType(); 
+        int minoDelta = 0;
+        int sandpaper = 0;//scalar for how smooth the board geography is
+        int valleyPeakDelta = -1;
+        
+        int baseHeight = 22;
+        boolean isBaseHeightSet = false;
+        int postPlacementHeight = 22;
+        boolean isPostPlacementHeightSet = false;
+        Integer[] individualColHeights = new Integer[10]; //objective and objectively important constants
 
-        try {
-            // Get the grayscale image of the game board
-            gameMatrix = game.getGrayscaleImage(potentialAction);
-        } catch (Exception e) {
-            e.printStackTrace();
+        try{
+            grayGrid = game.getGrayscaleImage(potentialAction); //getgrayscaleimage my beloved
+        }catch(Exception oops){
+            System.out.println("NOOOOO!!!! THIS CANNOT BE!!!!!!");
+            oops.printStackTrace();
             System.exit(-1);
         }
-
-        // parses through grayscale image matrix to collect feature data
-        for (int y = 0; y < gameMatrix.getShape().getNumRows(); y++ ) {
-            for (int x = 0; x < gameMatrix.getShape().getNumCols(); x++) {
-
-                // already placed piece coordinate
-                if (gameMatrix.get(y, x) == 0.5) {
-                    // sets maxHeightBefore
-                    if (mHBSet == false) {
-                        maxHeightBefore = y;
-                        mHBSet = true;
+        for(int x = 0; x < grayGrid.getShape().getNumRows(); x++ ){
+            for(int y = 0; y < grayGrid.getShape().getNumCols(); y++){
+                if(grayGrid.get(x, y) == 0.0){
+                    if(x > 0 && (grayGrid.get(x-1, y) != 0.0)){
+                        holesOnBoard += 1;
                     }
-                    // sets max height for this column for bumpiness
-                    if (colHeights[x] == null) {
-                        colHeights[x] = y;
+                    if(individualColHeights[y] != null){
+                        holesBeneath += 1;
+                    }
+                    if(valleyPeakDelta < x){
+                        valleyPeakDelta = x;
                     }
                 }
-
-                // current piece placement coordinate
-                if (gameMatrix.get(y, x) == 1.0) {
-                    // sets maxHeightAfter
-                    if (mHASet == false) {
-                        maxHeightAfter = y;
-                        mHASet = true;
+                if(grayGrid.get(x, y) == 1.0){
+                    if(individualColHeights[y] == null){
+                        individualColHeights[y] = x;
                     }
-                    // sets max height for this column for bumpiness
-                    if (colHeights[x] == null) {
-                        colHeights[x] = y;
+                    if(isPostPlacementHeightSet == false){
+                        isPostPlacementHeightSet = true;
+                        postPlacementHeight = x;
                     }
                 }
-
-                // empty coordinate
-                if (gameMatrix.get(y, x) == 0.0) {
-                    // iterates numHoles when coordinate above is filled
-                    if (y > 0 && (gameMatrix.get(y-1, x) == 1.0 || gameMatrix.get(y-1, x) == 0.5)) {
-                        numHoles += 1;
+                if(grayGrid.get(x, y) == 0.5){
+                    if(individualColHeights[y] == null){
+                        individualColHeights[y] = x;
                     }
-                    // iterates empty below when some cord above the current empty cord is filled
-                    if(colHeights[x] != null) {
-                        emptyBelow += 1;
+                    if(!isBaseHeightSet){
+                        isBaseHeightSet = true;
+                        baseHeight = x;
                     }
-                    // set value of lowestEmptyY
-                    if (lowestEmptyY < y) {
-                        lowestEmptyY = y;
-                    }
-                    
                 }
             }
         }
-
-        // set hightDelta value
-        int delta = maxHeightBefore - maxHeightAfter;
-        if (delta <= 0) {
-            heightDelta = 0;
+        int delta = baseHeight - postPlacementHeight;
+        if(delta > 0) {
+            minoDelta = delta;
         }
         else {
-            heightDelta = delta;
+            minoDelta = 0;
         }   
 
-        // set bumpiness value
+        // funky kong couldnt get me as hard as writing this did
         for (int i = 0; i < 9; i++) {
             int cur = 22;
-            if (colHeights[i] != null) {
-                cur = colHeights[i];
+            if (individualColHeights[i] != null) {
+                cur = individualColHeights[i];
             }
-
             int next = 22;
-            if (colHeights[i+1] != null) {
-                next = colHeights[i+1];
+            if (individualColHeights[i+1] != null) {
+                next = individualColHeights[i+1];
             }
-            bumpiness += Math.abs(cur - next);
+            sandpaper += Math.abs(cur - next);
         }
 
-        // set value of minoType
-        if (curMino == Mino.MinoType.valueOf("I")) {
-            minoType = 0;
+        valleyPeakDelta = postPlacementHeight - valleyPeakDelta;
+        if(curMino == Mino.MinoType.valueOf("I")){
+            minoShape = 0;
         }
-        else if (curMino == Mino.MinoType.valueOf("J")) {
-            minoType = 1;
+        else if(curMino == Mino.MinoType.valueOf("J")){
+            minoShape = 1;
         }
-        else if (curMino == Mino.MinoType.valueOf("L")) {
-            minoType = 2;
+        else if(curMino == Mino.MinoType.valueOf("L")){
+            minoShape = 2;
         }
-        else if (curMino == Mino.MinoType.valueOf("O")) {
-            minoType = 3;
+        else if(curMino == Mino.MinoType.valueOf("O")){
+            minoShape = 3;
         }
-        else if (curMino == Mino.MinoType.valueOf("S")) {
-            minoType = 4;
+        else if(curMino == Mino.MinoType.valueOf("S")){
+            minoShape = 4;
         }
-        else if (curMino == Mino.MinoType.valueOf("T")) {
-            minoType = 5;
+        else if(curMino == Mino.MinoType.valueOf("T")){
+            minoShape = 5;
         }
-        else if (curMino == Mino.MinoType.valueOf("Z")) {
-            minoType = 6;
+        else if(curMino == Mino.MinoType.valueOf("Z")){
+            minoShape = 6;
         }
-        
-        // prints for each feature data point
-        //System.out.println("numHoles: " + numHoles);
-        //System.out.println("maxB: " + maxHeightBefore);
-        //System.out.println("maxA: " + maxHeightAfter);
-        //System.out.println("heightDelta: " + heightDelta);
-        //System.out.println("bumpiness: " + bumpiness);
-        //System.out.println("emptyBelow: " + emptyBelow);
-        //System.out.println("lowestEmptyY: " + lowestEmptyY);
-        //System.out.println("minoType: " + minoType);
-        
+        featureMatrix.set(0, 0, holesOnBoard);
+        featureMatrix.set(0, 1, baseHeight);
+        featureMatrix.set(0, 2, postPlacementHeight);
+        featureMatrix.set(0, 3, minoDelta);
+        featureMatrix.set(0, 4, sandpaper);
+        featureMatrix.set(0, 5, holesBeneath);
+        featureMatrix.set(0, 6, valleyPeakDelta);
+        featureMatrix.set(0, 7, minoShape);
 
-        // set values in the return matrix to the collected feature data values
-        featureMatrix.set(0, 0, numHoles);
-        featureMatrix.set(0, 1, maxHeightBefore);
-        featureMatrix.set(0, 2, maxHeightAfter);
-        featureMatrix.set(0, 3, heightDelta);
-        featureMatrix.set(0, 4, bumpiness);
-        featureMatrix.set(0, 5, emptyBelow);
-        featureMatrix.set(0, 6, lowestEmptyY);
-        featureMatrix.set(0, 7, minoType);
-
-        //System.out.println(featureMatrix);
-        //System.out.println(gameMatrix);
-
-        // return features data
         return featureMatrix;
     }
 
@@ -256,23 +205,19 @@ public class TetrisQAgent
      */
     @Override
     public boolean shouldExplore(final GameView game, final GameCounter gameCounter) {
-        // gets turn and game ID's
-        int turnIdx = (int)gameCounter.getCurrentMoveIdx();
+        int moveIdx = (int)gameCounter.getCurrentMoveIdx();
         int gameIdx = (int)gameCounter.getCurrentGameIdx();
 
-        // fine tune for testing
-        double INITIAL_EXPLORATION_RATE = 0.6 - ((gameIdx * 0.01));  // scale the gameIdx's coef to total number of training games
-        double FINAL_EXPLORATION_RATE = 0.01; // explore rate will not go lower than this value
-        int EXPLORATION_DECAY_STEPS = 500; // higher number = slower decay
+        //only thing i wanna change atp really
+        double freshExplorationRate = 0.6 - ((gameIdx * 0.01));
+        double explorationRateFloor = 0.01;
+        int explorationDecayRate = 500;//big number for slow decay
 
-        // calculates explore rate value
-        double explore = Math.max(FINAL_EXPLORATION_RATE, INITIAL_EXPLORATION_RATE - turnIdx * (INITIAL_EXPLORATION_RATE - FINAL_EXPLORATION_RATE) / EXPLORATION_DECAY_STEPS);
-        // System.out.println("exploration value: " + explore);
+        double explore = Math.max(explorationRateFloor, freshExplorationRate - (moveIdx * (freshExplorationRate - explorationRateFloor)) / explorationDecayRate);
+        double rollProb = this.getRandom().nextDouble();
 
-        // generates random number between 0-1 and if less than our explore value we ignore the policy
-        if (this.getRandom().nextDouble() <= explore) { 
-            NUM_EXPLORED += 1;
-            // System.out.println("Policy ignored.");
+        if (rollProb <= explore) { //dice roll
+            expeditionCount += 1;
             return true;
         }
         return false;
@@ -288,11 +233,39 @@ public class TetrisQAgent
      * I would recommend devising your own strategy here.
      */
     @Override
-    public Mino getExplorationMove(final GameView game)
-    {
-        // god help us idk, will random guess, honestly doesnt seem like too bad a plan on its own
-        int randIdx = this.getRandom().nextInt(game.getFinalMinoPositions().size());
-        return game.getFinalMinoPositions().get(randIdx);
+    public Mino getExplorationMove(final GameView game) {
+        int numPossibilities = game.getFinalMinoPositions().size();
+        Matrix outcomes = Matrix.zeros(1, numPossibilities);
+
+        for(int i = 0; i < numPossibilities; i++){
+            try{
+                Matrix cur = this.getQFunctionInput(game, game.getFinalMinoPositions().get(i));
+                outcomes.set(0, i, Math.exp(this.initQFunction().forward(cur).get(0, 0)));
+            } catch (Exception oops) {
+                oops.printStackTrace();
+                System.exit(-1);
+            }
+        }
+        int minValPos = 0;
+        double minVal = Double.POSITIVE_INFINITY;
+        double qSum = outcomes.sum().get(0, 0);
+        Matrix qMatrix = Matrix.zeros(1, 1);
+        Matrix outcome = null;
+        
+        qMatrix.set(0, 0, qSum);
+        try {
+            outcome = outcomes.ediv(qMatrix);
+        } catch (Exception oops) {
+            oops.printStackTrace();
+            System.exit(-1);
+        }
+        for (int i = 0; i < numPossibilities; i++) {
+            if (outcome.get(0, i) < minVal) {
+                minVal = outcome.get(0, i);
+                minValPos = i;
+            }
+        }
+        return game.getFinalMinoPositions().get(minValPos);
     }
 
     /**
@@ -310,13 +283,8 @@ public class TetrisQAgent
      * of epochs in between the training and eval sections of each phase.
      */
     @Override
-    public void trainQFunction(Dataset dataset,
-                               LossFunction lossFunction,
-                               Optimizer optimizer,
-                               long numUpdates)
-    {
-        for(int epochIdx = 0; epochIdx < numUpdates; ++epochIdx)
-        {
+    public void trainQFunction(Dataset dataset, LossFunction lossFunction, Optimizer optimizer, long numUpdates) {
+        for(int epochIdx = 0; epochIdx < numUpdates; ++epochIdx){
             dataset.shuffle();
             Iterator<Pair<Matrix, Matrix> > batchIterator = dataset.iterator();
 
@@ -358,111 +326,71 @@ public class TetrisQAgent
      */
     @Override
     public double getReward(final GameView game) {
-        Board b = game.getBoard(); // current gamestate board
-        double reward = 0.0; // final reward value for the state
-
-        int highestOccdY = 22; // y value of the highest occupied coordinate on the board
-        Coordinate highestCord = null;
-        Boolean highestFound = false;
-
-        int lowestEmptyY = -1; // y value of the lowest empty coordinate on the board
         
-        int emptyBelow = 0; // counts number of empty spaces below the highest placed mino for each column
-        Integer[] colMax = new Integer[10];
+        Board board = game.getBoard();
+        double reward = 0.0;
 
-        int numFloating = 0; // counts number of occupied spaces with an empty space below them
+        int holesBeneath = 0;
+        int spacesWithEmptySpaceBelow = 0;
+        int sandpaper = 0;
+        Integer[] individualColumHeights = new Integer[10];
+        
+        int yHeight = 22;
+        Coordinate highestCoordPos = null;
+        Boolean isHighestCoordPosSet = false;
+        int lowestEmptyYPos = -1;
 
-        int bumpiness = 0; // sum of the absolute differences in height between adjacent columns
+        //doing it backwards to be able to go column by column (dont question the syntax it makes sense in my head)
+        for(int y = 0; y < 22; y++){
+            for(int x = 0; x < 10; x++){
 
-        // parse through board to collect feature data
-        for (int y = 0; y < 22; y++) {
-            for (int x = 0; x < 10; x++) {
-
-                // occupied coordinate
-                if (b.isCoordinateOccupied(x, y)) { 
-                    // get the highest coordinate position
-                    if (highestFound == false) {
-                        highestCord = new Coordinate(x, y);
-                        highestFound = true;
+                if(board.isCoordinateOccupied(x, y)){ 
+                    if(individualColumHeights[x] == null){
+                        individualColumHeights[x] = y;
                     }
-                    // sets the max for the current column
-                    if (colMax[x] == null) {
-                        colMax[x] = y;
+                    if(!isHighestCoordPosSet){
+                        isHighestCoordPosSet = true;
+                        highestCoordPos = new Coordinate(x, y);
                     }
-                    // count number of floating coordindates
-                    if (y < 21 && !b.isCoordinateOccupied(x, y+1)) {
-                        numFloating += 1;
-                    }
-
-                }
-
-                // empty coordinate
-                else if (!b.isCoordinateOccupied(x, y)) {
-                    // check if current column has an occupied space in a higher row
-                    if(colMax[x] != null) {
-                        emptyBelow += 1;
-                    }
-                    // set value of lowestEmptyY
-                    if (lowestEmptyY < y) {
-                        lowestEmptyY = y;
+                    if(y < 21 && !board.isCoordinateOccupied(x, y+1)){
+                        spacesWithEmptySpaceBelow += 1;
                     }
                 }
-
-                
+                else{
+                    if(individualColumHeights[x] != null){
+                        holesBeneath += 1;
+                    }
+                    if(lowestEmptyYPos < y){
+                        lowestEmptyYPos = y;
+                    }
+                }
             }
         }
-
-        // set value of highestY
-        if (highestCord != null) {
-            highestOccdY = highestCord.getYCoordinate();
+        if(highestCoordPos != null){
+            yHeight = highestCoordPos.getYCoordinate();
         }
-
-        // set bumpiness value
         for (int i = 0; i < 9; i++) {
             int cur = 22;
-            if (colMax[i] != null) {
-                cur = colMax[i];
+            if(individualColumHeights[i] != null){
+                cur = individualColumHeights[i];
             }
-
             int next = 22;
-            if (colMax[i+1] != null) {
-                next = colMax[i+1];
+            if(individualColumHeights[i+1] != null){
+                next = individualColumHeights[i+1];
             }
-            bumpiness += Math.abs(cur - next);
+            sandpaper += Math.abs(cur - next);
         }
+        int ptsEarned = game.getScoreThisTurn();
+        lowestEmptyYPos = lowestEmptyYPos - yHeight;
 
-        // prints for each feature data point
-        //System.out.println("scoreThisTurn: " + game.getScoreThisTurn());
-        // System.out.println("highestOccdY: " + highestOccdY);
-        //System.out.println("lowestEmptyY: " + lowestEmptyY);
-        //System.out.println("numFloating: " + numFloating);
-        //System.out.println("emptyBelow: " + emptyBelow);
-        //System.out.println("bumpiness: " + bumpiness);
-        
-        
+        // System.out.println("ptsEarned: " + ptsEarned);
+        // System.out.println("yHeight: " + yHeight);
+        // System.out.println("lowestEmptyYPos: " + lowestEmptyYPos);
+        // System.out.println("spacesWithEmptySpaceBelow: " + spacesWithEmptySpaceBelow);
+        // System.out.println("holesBeneath: " + holesBeneath);
+        // System.out.println("sandpaper: " + sandpaper);
 
-        // scalar values associated with each value, and their roughly estimated normalization min/max 
-        //scoreThisTurn (high prio) Scalar: 0.25, min: 0 || max: ?(1)
-        //highestOccdY (high prio)  Scalar: 0.25, min: 2 || max: 22
-        //lowestEmptyY (high prio)  Scalar: 0.25, min: 2 || max: 21
-        //numFloating (med prio)    Scalar: 0.1,  min: 0 || max: 85
-        //emptyBelow (med prio)     Scalar: 0.1,  min: 0 || max: 170
-        //bumpiness (low prio)      Scalar: 0.05, min: 0 || max: 180
-
-        // normalize each feature
-        double normScore = (double)game.getScoreThisTurn() / 1;
-        double normHigh = (double)highestOccdY / 22;
-        double normLow = (double)lowestEmptyY / 21;
-        double normFloat = (double)numFloating / 85;
-        double normEmpty = (double)emptyBelow / 170;
-        double normBump = (double)bumpiness / 180;
-
-        // still doesnt correctly compute, should begin with low negative value and as it builds worse based on our features should become more negative, with better moves making it less negative
-        // i think certain features should subtract from reward as they are good if they are high/low
-        reward = -1 * ((0.25 * normScore) + (0.25 * normHigh) + (0.25 * normLow) + (0.1 * normFloat) + (0.1 * normEmpty) + (0.05 * normBump));
-
-        // System.out.println("Reward value: " + reward);
-        // System.out.println();
+        reward = ((5 * ptsEarned) + yHeight) - ((holesBeneath * .5) + (lowestEmptyYPos * .2) + (spacesWithEmptySpaceBelow * .2) + (sandpaper * .1));
 
         return reward;
     }
