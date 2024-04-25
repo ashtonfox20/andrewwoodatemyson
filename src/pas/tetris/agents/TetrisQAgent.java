@@ -2,17 +2,18 @@ package src.pas.tetris.agents;
 
 
 // SYSTEM IMPORTS
-import java.util.*;
-import java.util.function.Function; 
+import java.util.Iterator;
+import java.util.List;
+import java.util.Random;
+import java.util.Arrays;
 
-
+import edu.bu.battleship.utils.Coordinate;
 // JAVA PROJECT IMPORTS
 import edu.bu.tetris.agents.QAgent;
 import edu.bu.tetris.agents.TrainerAgent.GameCounter;
 import edu.bu.tetris.game.Board;
 import edu.bu.tetris.game.Game.GameView;
 import edu.bu.tetris.game.minos.Mino;
-import edu.bu.tetris.game.minos.Mino.Orientation;
 import edu.bu.tetris.linalg.Matrix;
 import edu.bu.tetris.nn.Model;
 import edu.bu.tetris.nn.LossFunction;
@@ -29,9 +30,9 @@ import edu.bu.tetris.utils.Pair;
 public class TetrisQAgent
     extends QAgent
 {
-    boolean debug = false;
 
     public static final double EXPLORATION_PROB = 0.05;
+    public static int NUM_EXPLORED = 1;
 
     private Random random;
 
@@ -44,56 +45,24 @@ public class TetrisQAgent
     public Random getRandom() { return this.random; }
 
     @Override
-    public Model initQFunction()
-    {
-        // if (numOfFeatures == null) {
-        //     throw new IllegalArgumentException("numOfFeatures is null, and "+
-        //     "thus getQFunctionInput() is not called before initQFunction().");
-        // }
-        final int totalFeatures = calculateTotalFeatures();
-        // For the first hidden layer to have more neurons allows the network
-        // to create a broad range of features combinations and interactions
-        // from the input data  
-        final int hiddenDim1 = totalFeatures * 2;
-        // The second hidden layer then takes the broad interpretations from
-        // the first hidden layer and hone them together
-        final int hiddenDim2 = totalFeatures;
-        final int outDim = 1;
-
-        Sequential qFunction = new Sequential();
-        qFunction.add(new Dense(totalFeatures, hiddenDim1));
-        // Using ReLU to ensure good gradient flow, and to take care of the problem
-        // of vanishing gradient
-        qFunction.add(new ReLU()); 
-        qFunction.add(new Dense(hiddenDim1, hiddenDim2));
-        qFunction.add(new ReLU()); // Additional ReLU activation for deeper network
-        qFunction.add(new Dense(hiddenDim2, outDim));
-
-
+    public Model initQFunction() {
         // build a single-hidden-layer feedforward network
         // this example will create a 3-layer neural network (1 hidden layer)
-        // in this example, the input to the neural network is the
-        // image of the board unrolled into a giant vector
-        // final int numPixelsInImage = Board.NUM_ROWS * Board.NUM_COLS;
-        // final int hiddenDim = 2 * numPixelsInImage;
 
+        final int inputSize = 8; // should equal the size of the input row-vector
+        final int hiddenDim = (int)Math.pow(inputSize, 2); // increasing this value will allow for more complex patterns to be learned but will also increase the risk of overfitting
+        final int outDim = 1; // always keep at 1
 
-        // Sequential qFunction = new Sequential();
-        // qFunction.add(new Dense(numPixelsInImage, hiddenDim));
-        // qFunction.add(new Tanh());
-        // qFunction.add(new Dense(hiddenDim, outDim));
+        Sequential qFunction = new Sequential();
+        qFunction.add(new Dense(inputSize, hiddenDim));
+
+        // can experiment switching between the following to see which performs the best or maybe even multiple, i think Tahn is our best bet tho
+        qFunction.add(new Tanh());
+        //qFunction.add(new ReLU()); 
+        //qFunction.add(new Sigmoid()); 
+        qFunction.add(new Dense(hiddenDim, outDim));
 
         return qFunction;
-    }
-
-    // Calculate total number of input features based on the feature extraction logic
-    private int calculateTotalFeatures() {
-        int numPixels = Board.NUM_ROWS * Board.NUM_COLS; // Pixels from the image
-        int colHeights = Board.NUM_COLS;                // Heights of each column
-        int lineCompletions = 1;                        // Single feature for line completion potential
-        int holeScores = 3;                             // Scores for three types of holes
-
-        return numPixels + colHeights + lineCompletions + holeScores;
     }
 
     /**
@@ -111,93 +80,163 @@ public class TetrisQAgent
         "state" of the game without relying on the pixels? If you were given
         a tetris game midway through play, what properties would you look for?
      */
+    @Override
+    public Matrix getQFunctionInput(final GameView game, final Mino potentialAction) {
+        Matrix gameMatrix = null; // init matrix var
 
-    // System.out.println("Here is a printout of the grayscaleImage of the"+
-    // " board: ");
-    // System.out.println(game.getGrayscaleImage(potentialAction).toString());
-    /*
-    * boardCol, = 16
-    * start from row = 0 to 16, to get topMostFilledCell
-    * say it is at row = 4, then the height of the column is 16-4
-    */
-@Override
-    public Matrix getQFunctionInput(final GameView game,
-                                    final Mino potentialAction)
-    {
-        List<Double> features = new ArrayList<Double>();
-        Matrix resultingOneVectorMatrix = null;
+        // init feature matrix that will be returned with all the features of importance
+        Matrix featureMatrix = Matrix.zeros(1, 8);
 
-        try
-        {
-            Matrix currentMatrix = game.getGrayscaleImage(potentialAction);
-            if (debug) System.out.println(currentMatrix.toString());
+        // init features data (can add or remove certain features to see how it performs w/wo them)
+        int numHoles = 0; // number of empty spaces that have a filled space below them
 
-            // Provide the NN with the grayScaleImage of the Game
-            Matrix flattenedImage = currentMatrix.flatten();
-            for (int col = 0; col < flattenedImage.getShape().getNumCols(); col++) {
-                for (int row = 0; row < flattenedImage.getShape().getNumRows(); row++) {
-                    features.add(flattenedImage.get(row, col));
-                }
-            }
+        int maxHeightBefore = 22; // height of the tallest column without accounting for the current mino placement, gives distance from the top
+        boolean mHBSet = false;
 
-            // Explicitly provide the NN with the height of each column of the Game
-            for (int col = 0; col < currentMatrix.getShape().getNumCols(); col++) {
-                double colHeight = 0.0;
-                for (int row = 0; row < currentMatrix.getShape().getNumRows(); row++) {
-                    if (currentMatrix.get(row, col) != 0) { // meaning not empty
-                        colHeight = currentMatrix.getShape().getNumRows() - row;
-                        break;
-                    }
-                }
-                features.add(colHeight);
-            }
+        int maxHeightAfter = 22; // height of the tallest column accounting for the current mino placement, gives distance from the top
+        boolean mHASet = false;
 
-            // Evalute potential for line completions and add to features
-            features.add(calculatePotentialLineCompletion(currentMatrix));
+        int heightDelta = 0; // gives the delta in max height for the current mino placement
+        
+        int bumpiness = 0; // sum of the absolute differences in height between adjacent columns
+        Integer[] colHeights = new Integer[10];
 
-            // Evaluate holes and add their corresponding score as a feature
-            Map<String, List<Integer>> holes = classifyHoles(game.getBoard());
-            double[] scores = calculateScoreForEachHole(holes);
-            // adding the scores for "rule1", "rule2", "rule3"
-            for (double score : scores) {
-                features.add(score);
-            }
+        int emptyBelow = 0; // counts number of empty spaces below the highest placed mino for each column
 
-            // turn the feature List into a Vector
-            Matrix zeroMatrix = Matrix.zeros(1, features.size());
+        int lowestEmptyY = -1; // y value of the lowest empty coordinate on the board
 
-            for (int row = 0; row < 1; row++) {
-                for (int col = 0; col < features.size(); col++) {
-                    zeroMatrix.set(row, col, features.get(col));
-                }
-            }
+        int minoType = -1; // gets the type of the mino to be placed next in int form
+        Mino.MinoType curMino = potentialAction.getType(); 
 
-            resultingOneVectorMatrix = zeroMatrix;
-
-
-        } catch(Exception e)
-        {
+        try {
+            // Get the grayscale image of the game board
+            gameMatrix = game.getGrayscaleImage(potentialAction);
+        } catch (Exception e) {
             e.printStackTrace();
             System.exit(-1);
         }
-        return resultingOneVectorMatrix;
-    }
 
-    private double calculatePotentialLineCompletion(Matrix matrix) {
-        double completeLines = 0.0;
-        for (int row = 0; row < matrix.getShape().getNumRows(); row++) {
-            boolean complete = true;
-            for (int col = 0; col < matrix.getShape().getNumCols(); col++) {
-                if (matrix.get(row, col) == 0) {
-                    complete = false;
-                    break;
+        // parses through grayscale image matrix to collect feature data
+        for (int y = 0; y < gameMatrix.getShape().getNumRows(); y++ ) {
+            for (int x = 0; x < gameMatrix.getShape().getNumCols(); x++) {
+
+                // already placed piece coordinate
+                if (gameMatrix.get(y, x) == 0.5) {
+                    // sets maxHeightBefore
+                    if (mHBSet == false) {
+                        maxHeightBefore = y;
+                        mHBSet = true;
+                    }
+                    // sets max height for this column for bumpiness
+                    if (colHeights[x] == null) {
+                        colHeights[x] = y;
+                    }
+                }
+
+                // current piece placement coordinate
+                if (gameMatrix.get(y, x) == 1.0) {
+                    // sets maxHeightAfter
+                    if (mHASet == false) {
+                        maxHeightAfter = y;
+                        mHASet = true;
+                    }
+                    // sets max height for this column for bumpiness
+                    if (colHeights[x] == null) {
+                        colHeights[x] = y;
+                    }
+                }
+
+                // empty coordinate
+                if (gameMatrix.get(y, x) == 0.0) {
+                    // iterates numHoles when coordinate above is filled
+                    if (y > 0 && (gameMatrix.get(y-1, x) == 1.0 || gameMatrix.get(y-1, x) == 0.5)) {
+                        numHoles += 1;
+                    }
+                    // iterates empty below when some cord above the current empty cord is filled
+                    if(colHeights[x] != null) {
+                        emptyBelow += 1;
+                    }
+                    // set value of lowestEmptyY
+                    if (lowestEmptyY < y) {
+                        lowestEmptyY = y;
+                    }
+                    
                 }
             }
-            if (complete) {
-                completeLines++;
-            }
         }
-        return completeLines;
+
+        // set hightDelta value
+        int delta = maxHeightBefore - maxHeightAfter;
+        if (delta <= 0) {
+            heightDelta = 0;
+        }
+        else {
+            heightDelta = delta;
+        }   
+
+        // set bumpiness value
+        for (int i = 0; i < 9; i++) {
+            int cur = 22;
+            if (colHeights[i] != null) {
+                cur = colHeights[i];
+            }
+
+            int next = 22;
+            if (colHeights[i+1] != null) {
+                next = colHeights[i+1];
+            }
+            bumpiness += Math.abs(cur - next);
+        }
+
+        // set value of minoType
+        if (curMino == Mino.MinoType.valueOf("I")) {
+            minoType = 0;
+        }
+        else if (curMino == Mino.MinoType.valueOf("J")) {
+            minoType = 1;
+        }
+        else if (curMino == Mino.MinoType.valueOf("L")) {
+            minoType = 2;
+        }
+        else if (curMino == Mino.MinoType.valueOf("O")) {
+            minoType = 3;
+        }
+        else if (curMino == Mino.MinoType.valueOf("S")) {
+            minoType = 4;
+        }
+        else if (curMino == Mino.MinoType.valueOf("T")) {
+            minoType = 5;
+        }
+        else if (curMino == Mino.MinoType.valueOf("Z")) {
+            minoType = 6;
+        }
+        
+        // prints for each feature data point
+        //System.out.println("numHoles: " + numHoles);
+        //System.out.println("maxB: " + maxHeightBefore);
+        //System.out.println("maxA: " + maxHeightAfter);
+        //System.out.println("heightDelta: " + heightDelta);
+        //System.out.println("bumpiness: " + bumpiness);
+        //System.out.println("emptyBelow: " + emptyBelow);
+        //System.out.println("lowestEmptyY: " + lowestEmptyY);
+        //System.out.println("minoType: " + minoType);
+        
+
+        // set values in the return matrix to the collected feature data values
+        featureMatrix.set(0, 0, numHoles);
+        featureMatrix.set(0, 1, maxHeightBefore);
+        featureMatrix.set(0, 2, maxHeightAfter);
+        featureMatrix.set(0, 3, heightDelta);
+        featureMatrix.set(0, 4, bumpiness);
+        featureMatrix.set(0, 5, emptyBelow);
+        featureMatrix.set(0, 6, lowestEmptyY);
+        featureMatrix.set(0, 7, minoType);
+
+        //System.out.println(featureMatrix);
+        //System.out.println(gameMatrix);
+
+        // return features data
+        return featureMatrix;
     }
 
     /**
@@ -216,23 +255,28 @@ public class TetrisQAgent
      * strategy here.
      */
     @Override
-    public boolean shouldExplore(final GameView game,
-                                 final GameCounter gameCounter)
-    {
-        long totalGamesPlayed = gameCounter.getTotalGamesPlayed(); // give it the variable x
-        // System.out.println("Current total games played: " + totalGamesPlayed);
-        // Math.max (0.05, 1.0 * (0.995)^x), as the number of games we play
-        // increases, the latter will decay
-        double currentExplorationProb = Math.max(MIN_EXPLORATION_PROB, 
-            INITIAL_EXPLORATION_PROB * Math.pow(EXPLORATION_DECAY_RATE, totalGamesPlayed));
-        return this.getRandom().nextDouble() <= currentExplorationProb;
-        // return this.getRandom().nextDouble() <= EXPLORATION_PROB;
+    public boolean shouldExplore(final GameView game, final GameCounter gameCounter) {
+        // gets turn and game ID's
+        int turnIdx = (int)gameCounter.getCurrentMoveIdx();
+        int gameIdx = (int)gameCounter.getCurrentGameIdx();
+
+        // fine tune for testing
+        double INITIAL_EXPLORATION_RATE = 0.6 - ((gameIdx * 0.01));  // scale the gameIdx's coef to total number of training games
+        double FINAL_EXPLORATION_RATE = 0.01; // explore rate will not go lower than this value
+        int EXPLORATION_DECAY_STEPS = 500; // higher number = slower decay
+
+        // calculates explore rate value
+        double explore = Math.max(FINAL_EXPLORATION_RATE, INITIAL_EXPLORATION_RATE - turnIdx * (INITIAL_EXPLORATION_RATE - FINAL_EXPLORATION_RATE) / EXPLORATION_DECAY_STEPS);
+        // System.out.println("exploration value: " + explore);
+
+        // generates random number between 0-1 and if less than our explore value we ignore the policy
+        if (this.getRandom().nextDouble() <= explore) { 
+            NUM_EXPLORED += 1;
+            // System.out.println("Policy ignored.");
+            return true;
+        }
+        return false;
     }
-
-    private static final double INITIAL_EXPLORATION_PROB = 1.0;
-    private static final double MIN_EXPLORATION_PROB = 0.05;
-    private static final double EXPLORATION_DECAY_RATE = 0.995;  
-
 
     /**
      * This method is a counterpart to the "shouldExplore" method. Whenever we decide
@@ -243,101 +287,12 @@ public class TetrisQAgent
      * option, which in practice doesn't work as well as a more guided strategy.
      * I would recommend devising your own strategy here.
      */
-    HashMap<Mino, Double> minoToReward = new HashMap<Mino, Double>();
-    HashMap<Mino, Integer> minoToCount = new HashMap<Mino, Integer>();
-    int totalMinoCount = 0;
-
     @Override
     public Mino getExplorationMove(final GameView game)
     {
-        // int randIdx = this.getRandom().nextInt(game.getFinalMinoPositions().size());
-        // return game.getFinalMinoPositions().get(randIdx);
-
-        double bestUCBScoreSoFar = 0.0;
-        Mino bestMinoPositionSoFar = null;
-
-        /*
-         * reward, initially, we have 0.0, so we have to getReward,
-         * 
-         * but then afterwards, we may have some <double> reward, then can use the value
-         * of the get
-         * 
-         * if minoToReward.get(mino) is 0.0, then we add reward to it
-         * else minoToReward(mino), then we still add reward to it
-         */
-        for (Mino mino : game.getFinalMinoPositions()) {
-            /*
-             * the defaults below and the if-condition is to handle possible 
-             * initialization edge cases
-             */
-            double currentMinoTotalReward = minoToReward.getOrDefault(mino,
-            getRewardForMinoInMatrix(game, mino));
-            int currentMinoCount = minoToCount.getOrDefault(mino, 1);
-            int localMinoCount = totalMinoCount;
-            if (totalMinoCount == 0) {
-                localMinoCount = 1;
-            }
-
-            double UCBScore = getUCBScore(currentMinoTotalReward, currentMinoCount, localMinoCount);
-
-            if (UCBScore > bestUCBScoreSoFar) {
-                bestUCBScoreSoFar = UCBScore;
-                bestMinoPositionSoFar = mino;
-            }
-        }
-
-        // sanity check
-        if (bestUCBScoreSoFar == 0.0 || bestMinoPositionSoFar == null) {
-            throw new IllegalArgumentException("Either bestUCBScoreSoFar == 0.0 " +
-            "or bestMinoPositionSoFar == null, meaning a valid exploration move " +
-            "was not selected.");
-        }
-
-        // having arrived here, we've found the move we should execute according to
-        // UCB
-
-        // update minoToReward
-        double minoTotalReward = minoToReward.getOrDefault(bestMinoPositionSoFar, 0.0);
-        minoToReward.put(bestMinoPositionSoFar, minoTotalReward + getRewardForMinoInMatrix(game, bestMinoPositionSoFar));
-        // update minoToCount
-        int minoTotalCount = minoToCount.getOrDefault(bestMinoPositionSoFar, 0);
-        minoToCount.put(bestMinoPositionSoFar, minoTotalCount + 1);
-        // update totalMinoCount
-        totalMinoCount += 1;
-
-        return bestMinoPositionSoFar;
-    }
-    // we could for one use getReward to examine the current board, 
-    // or i can keep a hashmap of each mino with its count
-    private static final double UCBTunabilityFactor = Math.sqrt(2);
-
-    private double getUCBScore(double minoReward, int minoCount, int totalMinoCount) {
-        double avgMinoReward = minoReward / minoCount;
-        return avgMinoReward + UCBTunabilityFactor * Math.sqrt(Math.log(totalMinoCount) / minoCount);
-    }
-
-    private double getRewardForMinoInMatrix(final GameView game, Mino mino) {
-        double inversedScore = 0.0;
-        try {
-            Matrix grayScaleMatrix = game.getGrayscaleImage(mino);
-            Map<String, List<Integer>> holes = classifyHoles(grayScaleMatrix);
-            double score = calculateScore(holes);
-            // System.out.println("Print of score: " + score);
-            inversedScore = aOverSqrtX(score);
-            // System.out.println("Print of inversedScore: " + inversedScore);
-
-        } catch (Exception err) {
-            System.err.println("Failed to generate grayscale image: " + err.getMessage());
-            err.printStackTrace();
-
-        }
-
-        if (inversedScore == 0.0) {
-            throw new IllegalArgumentException("The method getRewardForMinoInMatrix()" + 
-            "returned a score of 0.0, which should not be allowed.");
-        }
-
-        return inversedScore;
+        // god help us idk, will random guess, honestly doesnt seem like too bad a plan on its own
+        int randIdx = this.getRandom().nextInt(game.getFinalMinoPositions().size());
+        return game.getFinalMinoPositions().get(randIdx);
     }
 
     /**
@@ -402,386 +357,113 @@ public class TetrisQAgent
      * signal that is less sparse, you should see your model optimize this reward over time.
      */
     @Override
-    public double getReward(final GameView game)
-    {
-        Board board = game.getBoard();
+    public double getReward(final GameView game) {
+        Board b = game.getBoard(); // current gamestate board
+        double reward = 0.0; // final reward value for the state
 
-        Map<String, List<Integer>> holes = classifyHoles(board);
+        int highestOccdY = 22; // y value of the highest occupied coordinate on the board
+        Coordinate highestCord = null;
+        Boolean highestFound = false;
 
-        // calculateScore returns a high number for a bad state
-        // returns a small number for a good state
-        double score = calculateScore(holes);
-        if (debug) System.out.println("Print of a badness score: " + score);
-
-        // we need to inverse it, s.t. the high number of a bad state => low number
-        // s.t. the low number of a good state => high number
-        double inversedScore = aOverSqrtX(score);
-        if (debug) System.out.println("Print of boardStateScore: " + inversedScore);
+        int lowestEmptyY = -1; // y value of the lowest empty coordinate on the board
         
-        double heightScore = calculateHeightScore(board);
-        if (debug) System.out.println("Print of heightScore: " + heightScore);
+        int emptyBelow = 0; // counts number of empty spaces below the highest placed mino for each column
+        Integer[] colMax = new Integer[10];
 
-        // need to make game.getScoreThisTurn() much more significant so that
-        // we can highly incentivize the agent to try to complete lines
+        int numFloating = 0; // counts number of occupied spaces with an empty space below them
 
-        /*
-         * we will either have to change the score function, or inflate the score
-         * acquired
-         * 
-         * for example, if a score of 6 is acquired etc, then this should dominate
-         * the score of calculating the board, no?
-         */
-        double lineCompleteScore = getLineCompleteScore(game.getScoreThisTurn());
-        if (debug) System.out.println("Print of lineClearedScore: " + lineCompleteScore);
+        int bumpiness = 0; // sum of the absolute differences in height between adjacent columns
 
-        double totalScore = inversedScore + lineCompleteScore + heightScore;
-        if (debug) System.out.println("Print of totalScore: " + totalScore);
+        // parse through board to collect feature data
+        for (int y = 0; y < 22; y++) {
+            for (int x = 0; x < 10; x++) {
 
-        return totalScore;
-    }
-
-    private double getLineCompleteScore(double scoreThisTurn) {
-        if (scoreThisTurn != 0) {
-            if (debug) System.out.println("Check score here. " + scoreThisTurn);
-        }
-        return Math.exp(3.0 / 4.0 * scoreThisTurn) - 1;
-    }
-
-    // we are using a height-based weighing function for the holes
-    private Map<String, List<Integer>> classifyHoles(Board board) {
-        // System.out.println("Here is a print out of the board: " + board.toString());
-        // System.out.println("Above is a print out of the current board.");
-        Map<String, List<Integer>> holes = new HashMap<>();
-        holes.put("rule1", new ArrayList<>());
-        holes.put("rule2", new ArrayList<>());
-        holes.put("rule3", new ArrayList<>());
-
-        int boardCol = board.NUM_COLS;
-        int boardRow = board.NUM_ROWS;
-
-        // rule 1
-        for (int col = 1; col < boardCol; col++) {
-            Integer topMostRow = null;
-            for (int row = 0; row < boardRow; row++) {
-                if (board.isCoordinateOccupied(col, row)) {
-                    topMostRow = row;
-                    break;
-                }
-            }
-            if (topMostRow == null) {
-                continue;
-            }
-
-            for (int tempRow = topMostRow; tempRow < boardRow; tempRow++) {
-                if (!board.isCoordinateOccupied(col - 1, tempRow)) {
-                    // System.out.println(
-                    //     "rule1 hole in the board: (" + (col-1) + "," + tempRow + ")");
-                    holes.get("rule1").add(tempRow);
-                }
-            }
-        }
-
-        // rule 3
-        for (int col = 0; col < boardCol - 1; col++) {
-            Integer topMostRow = null;
-            for (int row = 0; row < boardRow; row++) {
-                if (board.isCoordinateOccupied(col, row)) {
-                    topMostRow = row;
-                    break;
-                }
-            }
-            if (topMostRow == null) {
-                continue;
-            }
-
-            for (int tempRow = topMostRow; tempRow < boardRow; tempRow++) {
-                if (!board.isCoordinateOccupied(col + 1, tempRow)) {
-                    // System.out.println(
-                    //     "rule3 hole in the board: (" + (col+1) + "," + tempRow + ")");
-                    holes.get("rule3").add(tempRow);
-                }
-            }
-        }
-
-        // rule 2
-        for (int col = 0; col < boardCol; col++) {
-            Integer topMostRow = null;
-            for (int row = 0; row < boardRow; row++) {
-                if (board.isCoordinateOccupied(col, row)) {
-                    topMostRow = row;
-                    break;
-                }
-            }
-            if (topMostRow == null) {
-                continue;
-            }
-
-            for (int tempRow = topMostRow; tempRow < boardRow; tempRow++) {
-                if (!board.isCoordinateOccupied(col, tempRow)) {
-                    // System.out.println(
-                    //     "rule2 hole in the board: (" + col + "," + tempRow + ")");
-                    holes.get("rule2").add(tempRow);
-                }
-            }
-        }
-
-        // for (int col = 0; col < boardCol; col++) {
-        //     int topMostFilledRow = -1;
-        //     for (int row = 0; row < boardRow; row++) {
-        //         if (board.isCoordinateOccupied(col, row)) {
-        //             topMostFilledRow = row;
-        //             break;
-        //         }
-        //     }
-    
-        //     for (int row = topMostFilledRow + 1; row < boardRow; row++) {
-        //         if (!board.isCoordinateOccupied(col, row)) { // Empty cell under the topmost filled cell
-        //             System.out.println(
-        //                 "rule2 hole in the board: (" + col + "," + row + ")");
-        //             holes.get("rule2").add(row);
-        //         }
-        //     }
-    
-        //     // Check neighboring columns for rule 1 and rule 3
-        //     if (col > 0) { // Check left neighbor
-        //         int leftTopMostFilledRow = findTopMostFilled(board, col - 1, boardRow);
-        //         for (int row = 0; row <= leftTopMostFilledRow; row++) {
-        //             if (!board.isCoordinateOccupied(col, row)) {
-        //                 System.out.println(
-        //                     "rule1 hole in the board: (" + col + "," + row + ")");
-        //                 holes.get("rule1").add(row);
-        //             }
-        //         }
-        //     }
-        //     if (col < boardCol - 1) { // Check right neighbor
-        //         int rightTopMostFilledRow = findTopMostFilled(board, col + 1, boardRow);
-        //         for (int row = 0; row <= rightTopMostFilledRow; row++) {
-        //             if (!board.isCoordinateOccupied(col, row)) {
-        //                 System.out.println(
-        //                     "rule3 hole in the board: (" + col + "," + row + ")");
-        //                 holes.get("rule3").add(row);
-        //             }
-        //         }
-        //     }
-        // }
-        // System.out.println("");
-        return holes;
-    } 
-
-    // assuming a grayscaleimage matrix is passed in
-    // this function would not work correctly with any other types of matrix
-    private Map<String, List<Integer>> classifyHoles(Matrix matrix) {
-        Map<String, List<Integer>> holes = new HashMap<>();
-        holes.put("rule1", new ArrayList<>());
-        holes.put("rule2", new ArrayList<>());
-        holes.put("rule3", new ArrayList<>());
-
-        int matrixCol = matrix.getShape().getNumCols();
-        int matrixRow = matrix.getShape().getNumRows();
-
-        // rule 1
-        for (int col = 1; col < matrixCol; col++) {
-            Integer topMostRow = null;
-            for (int row = 0; row < matrixRow; row++) {
-                if (matrix.get(row, col) != 0) {
-                    topMostRow = row;
-                    break;
-                }
-            }
-            if (topMostRow == null) {
-                continue;
-            }
-
-            for (int tempRow = topMostRow; tempRow < matrixRow; tempRow++) {
-                if (matrix.get(tempRow, col - 1) == 0) {
-                    holes.get("rule1").add(tempRow);
-                }
-            }
-        }
-
-        // rule 3
-        for (int col = 0; col < matrixCol - 1; col++) {
-            Integer topMostRow = null;
-            for (int row = 0; row < matrixRow; row++) {
-                if (matrix.get(row, col) != 0) {
-                    topMostRow = row;
-                    break;
-                }
-            }
-            if (topMostRow == null) {
-                continue;
-            }
-
-            for (int tempRow = topMostRow; tempRow < matrixRow; tempRow++) {
-                if (matrix.get(tempRow, col + 1) == 0) {
-                    holes.get("rule3").add(tempRow);
-                }
-            }
-        }
-
-        // rule 2
-        for (int col = 0; col < matrixCol; col++) {
-            Integer topMostRow = null;
-            for (int row = 0; row < matrixRow; row++) {
-                if (matrix.get(row, col) != 0) {
-                    topMostRow = row;
-                    break;
-                }
-            }
-            if (topMostRow == null) {
-                continue;
-            }
-
-            for (int tempRow = topMostRow; tempRow < matrixRow; tempRow++) {
-                if (matrix.get(tempRow, col) == 0) {
-                    holes.get("rule2").add(tempRow);
-                }
-            }
-        }
-    
-        // for (int col = 0; col < matrixWidth; col++) {
-        //     int topMostFilledRow = -1;
-        //     for (int row = 0; row < matrixHeight; row++) {
-        //         if (matrix.get(row, col) == 1) { // Assuming '1' represents a filled cell
-        //             topMostFilledRow = row;
-        //             break;
-        //         }
-        //     }
-    
-        //     for (int row = topMostFilledRow + 1; row < matrixHeight; row++) {
-        //         if (matrix.get(row, col) == 0) { // Empty cell under the topmost filled cell
-        //             holes.get("rule2").add(row);
-        //         }
-        //     }
-    
-        //     // Check neighboring columns for rule 1 and rule 3
-        //     if (col > 0) { // Check left neighbor
-        //         int leftTopMostFilledRow = findTopMostFilled(matrix, col - 1, matrixHeight);
-        //         for (int row = 0; row <= leftTopMostFilledRow; row++) {
-        //             if (matrix.get(row, col) == 0) {
-        //                 holes.get("rule1").add(row);
-        //             }
-        //         }
-        //     }
-        //     if (col < matrixWidth - 1) { // Check right neighbor
-        //         int rightTopMostFilledRow = findTopMostFilled(matrix, col + 1, matrixHeight);
-        //         for (int row = 0; row <= rightTopMostFilledRow; row++) {
-        //             if (matrix.get(row, col) == 0) {
-        //                 holes.get("rule3").add(row);
-        //             }
-        //         }
-        //     }
-        // }
-        return holes;
-    }
-
-    /*
-     * row
-     * 0   0
-     * 1   0
-     * 2   0
-     * 3   1
-     * 4   0.5
-     * 
-     * so row = 3 is returned
-     */
-
-    private double calculateScore(Map<String, List<Integer>> holes) {
-        double score = 0;
-        Function<Integer, Double> f = y -> Math.pow(y, 3);
-        Function<Integer, Double> g = y -> Math.pow(y, 2);
-    
-        score += holes.get("rule1").stream().mapToDouble(row -> g.apply(row)).sum();
-        score += holes.get("rule2").stream().mapToDouble(row -> f.apply(row)).sum();
-        score += holes.get("rule3").stream().mapToDouble(row -> g.apply(row)).sum();
-    
-        return score;
-    }
-
-    private double[] calculateScoreForEachHole(Map<String, List<Integer>> holes) {
-        double[] scores = new double[3];
-
-        Function<Integer, Double> f = y -> Math.pow(y, 3);
-        Function<Integer, Double> g = y -> Math.pow(y, 2);
-    
-        scores[0] = holes.get("rule1").stream().mapToDouble(row -> g.apply(row)).sum();
-        scores[1] = holes.get("rule2").stream().mapToDouble(row -> f.apply(row)).sum();
-        scores[2] = holes.get("rule3").stream().mapToDouble(row -> g.apply(row)).sum();
-
-        return scores;
-    }
-
-    private static final int a = 100;
-
-    private double aOverSqrtX(double x) {
-        if (x < 0) {
-            throw new IllegalArgumentException("x cannot be negative");
-        }
-        if (x == 0.0) {
-            return 0.0;
-        }
-        return a / (Math.sqrt(x));
-    }
-
-    private double calculateHeightScore(Board board) {
-        final int maxRows = Board.NUM_ROWS;
-        double totalHeight = 0;
-        double[] heights = new double[board.NUM_COLS];  // Store individual column heights
-        double maxColumnHeight = 0;
-
-        // Calculate total filled height and find max height
-        for (int col = 0; col < board.NUM_COLS; col++) {
-            for (int row = 0; row < board.NUM_ROWS; row++) {
-                if (board.isCoordinateOccupied(col, row)) {
-                    heights[col] = maxRows - row;
-                    if (heights[col] > maxColumnHeight) {
-                        maxColumnHeight = heights[col];
+                // occupied coordinate
+                if (b.isCoordinateOccupied(x, y)) { 
+                    // get the highest coordinate position
+                    if (highestFound == false) {
+                        highestCord = new Coordinate(x, y);
+                        highestFound = true;
                     }
-                    break;
+                    // sets the max for the current column
+                    if (colMax[x] == null) {
+                        colMax[x] = y;
+                    }
+                    // count number of floating coordindates
+                    if (y < 21 && !b.isCoordinateOccupied(x, y+1)) {
+                        numFloating += 1;
+                    }
+
                 }
+
+                // empty coordinate
+                else if (!b.isCoordinateOccupied(x, y)) {
+                    // check if current column has an occupied space in a higher row
+                    if(colMax[x] != null) {
+                        emptyBelow += 1;
+                    }
+                    // set value of lowestEmptyY
+                    if (lowestEmptyY < y) {
+                        lowestEmptyY = y;
+                    }
+                }
+
+                
             }
-            totalHeight += heights[col];
         }
 
-        // Apply exponential decay formula with variance
-        return Math.exp(1 - (0.15 * maxColumnHeight));
+        // set value of highestY
+        if (highestCord != null) {
+            highestOccdY = highestCord.getYCoordinate();
+        }
+
+        // set bumpiness value
+        for (int i = 0; i < 9; i++) {
+            int cur = 22;
+            if (colMax[i] != null) {
+                cur = colMax[i];
+            }
+
+            int next = 22;
+            if (colMax[i+1] != null) {
+                next = colMax[i+1];
+            }
+            bumpiness += Math.abs(cur - next);
+        }
+
+        // prints for each feature data point
+        //System.out.println("scoreThisTurn: " + game.getScoreThisTurn());
+        // System.out.println("highestOccdY: " + highestOccdY);
+        //System.out.println("lowestEmptyY: " + lowestEmptyY);
+        //System.out.println("numFloating: " + numFloating);
+        //System.out.println("emptyBelow: " + emptyBelow);
+        //System.out.println("bumpiness: " + bumpiness);
+        
+        
+
+        // scalar values associated with each value, and their roughly estimated normalization min/max 
+        //scoreThisTurn (high prio) Scalar: 0.25, min: 0 || max: ?(1)
+        //highestOccdY (high prio)  Scalar: 0.25, min: 2 || max: 22
+        //lowestEmptyY (high prio)  Scalar: 0.25, min: 2 || max: 21
+        //numFloating (med prio)    Scalar: 0.1,  min: 0 || max: 85
+        //emptyBelow (med prio)     Scalar: 0.1,  min: 0 || max: 170
+        //bumpiness (low prio)      Scalar: 0.05, min: 0 || max: 180
+
+        // normalize each feature
+        double normScore = (double)game.getScoreThisTurn() / 1;
+        double normHigh = (double)highestOccdY / 22;
+        double normLow = (double)lowestEmptyY / 21;
+        double normFloat = (double)numFloating / 85;
+        double normEmpty = (double)emptyBelow / 170;
+        double normBump = (double)bumpiness / 180;
+
+        // still doesnt correctly compute, should begin with low negative value and as it builds worse based on our features should become more negative, with better moves making it less negative
+        // i think certain features should subtract from reward as they are good if they are high/low
+        reward = -1 * ((0.25 * normScore) + (0.25 * normHigh) + (0.25 * normLow) + (0.1 * normFloat) + (0.1 * normEmpty) + (0.05 * normBump));
+
+        // System.out.println("Reward value: " + reward);
+        // System.out.println();
+
+        return reward;
     }
-
-    // private double calculateHeightScore(Board board) {
-    //     final int maxRows = Board.NUM_ROWS;
-    //     double totalHeight = 0;
-    //     double[] heights = new double[board.NUM_COLS];  // Store individual column heights
-    //     double maxColumnHeight = 0;
-
-    //     // Calculate total filled height and find max height
-    //     for (int col = 0; col < board.NUM_COLS; col++) {
-    //         for (int row = 0; row < board.NUM_ROWS; row++) {
-    //             if (board.isCoordinateOccupied(col, row)) {
-    //                 heights[col] = maxRows - row;
-    //                 if (heights[col] > maxColumnHeight) {
-    //                     maxColumnHeight = heights[col];
-    //                 }
-    //                 break;
-    //             }
-    //         }
-    //         totalHeight += heights[col];
-    //     }
-
-    //     // Calculate average filled height
-    //     double averageHeight = totalHeight / board.NUM_COLS;
-
-    //     // Calculate variance
-    //     double variance = 0;
-    //     for (double height : heights) {
-    //         variance += Math.pow(height - averageHeight, 2);
-    //     }
-    //     variance /= board.NUM_COLS;
-
-    //     // Constants for decay calculation
-    //     double decayConstant = 0.1;  // Adjust decay rate
-    //     double varianceImpact = 0.5;  // Adjust impact of variance
-
-    //     // Apply exponential decay formula with variance
-    //     return Math.exp(-decayConstant * (averageHeight / maxRows + varianceImpact * Math.sqrt(variance) / maxRows));
-    // }
 }
