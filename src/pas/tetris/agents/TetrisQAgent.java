@@ -389,8 +389,9 @@ public class TetrisQAgent
         // System.out.println("spacesWithEmptySpaceBelow: " + spacesWithEmptySpaceBelow);
         // System.out.println("holesBeneath: " + holesBeneath);
         // System.out.println("sandpaper: " + sandpaper);
+        // System.out.println("");
 
-        reward = ((5 * ptsEarned) + yHeight) - ((holesBeneath * .5) + (lowestEmptyYPos * .2) + (spacesWithEmptySpaceBelow * .2) + (sandpaper * .1));
+        reward = Math.pow((5 * ptsEarned),3) - ((holesBeneath * .5) + (lowestEmptyYPos * .2) + (spacesWithEmptySpaceBelow * .2) + (sandpaper * .1));
 
         return reward;
     }
