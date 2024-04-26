@@ -392,6 +392,7 @@ public class TetrisQAgent
         // System.out.println("");
 
         reward = Math.pow((5 * ptsEarned),3) - ((holesBeneath * .5) + (lowestEmptyYPos * .2) + (spacesWithEmptySpaceBelow * .2) + (sandpaper * .1));
+        // reward = ((10 * ptsEarned) + yHeight) - (Math.pow(1-holesBeneath, 4) * ((spacesWithEmptySpaceBelow * .7) + (sandpaper * .3))); //version 2
 
         return reward;
     }
