@@ -53,6 +53,7 @@ public class TetrisQAgent
         final int hiddenDim = (int)Math.pow(inputSize, 2); //danger variable >:)
         final int outDim = 1; 
         Sequential qFunction = new Sequential();
+        // qFunction.add(new ReLU());
         qFunction.add(new Dense(inputSize, hiddenDim));
         qFunction.add(new ReLU()); //relu supremacy
         qFunction.add(new Dense(hiddenDim, outDim));
@@ -79,8 +80,8 @@ public class TetrisQAgent
         Matrix grayGrid = null;
         Matrix featureMatrix = Matrix.zeros(1, 8);
         
-        int holesOnBoard = 0;
-        int holesBeneath = 0;//how many fuckups i mean empty spaces are below a mino space
+        int spaceWithMinoBeneath = 0;
+        int numSpacesBelowHighestMino = 0;//how many fuckups i mean empty spaces are below a mino space
         int minoShape = -1;
         Mino.MinoType curMino = potentialAction.getType(); 
         int minoDelta = 0;
@@ -104,10 +105,10 @@ public class TetrisQAgent
             for(int y = 0; y < grayGrid.getShape().getNumCols(); y++){
                 if(grayGrid.get(x, y) == 0.0){
                     if(x > 0 && (grayGrid.get(x-1, y) != 0.0)){
-                        holesOnBoard += 1;
+                        spaceWithMinoBeneath += 1;
                     }
                     if(individualColHeights[y] != null){
-                        holesBeneath += 1;
+                        numSpacesBelowHighestMino += 1;
                     }
                     if(valleyPeakDelta < x){
                         valleyPeakDelta = x;
@@ -176,12 +177,12 @@ public class TetrisQAgent
         else if(curMino == Mino.MinoType.valueOf("Z")){
             minoShape = 6;
         }
-        featureMatrix.set(0, 0, holesOnBoard);
+        featureMatrix.set(0, 0, spaceWithMinoBeneath);
         featureMatrix.set(0, 1, baseHeight);
         featureMatrix.set(0, 2, postPlacementHeight);
         featureMatrix.set(0, 3, minoDelta);
         featureMatrix.set(0, 4, sandpaper);
-        featureMatrix.set(0, 5, holesBeneath);
+        featureMatrix.set(0, 5, numSpacesBelowHighestMino);
         featureMatrix.set(0, 6, valleyPeakDelta);
         featureMatrix.set(0, 7, minoShape);
 
@@ -205,22 +206,14 @@ public class TetrisQAgent
      */
     @Override
     public boolean shouldExplore(final GameView game, final GameCounter gameCounter) {
-        int moveIdx = (int)gameCounter.getCurrentMoveIdx();
-        int gameIdx = (int)gameCounter.getCurrentGameIdx();
 
-        //only thing i wanna change atp really
-        double freshExplorationRate = 0.6 - ((gameIdx * 0.01));
-        double explorationRateFloor = 0.01;
-        int explorationDecayRate = 500;//big number for slow decay
+        double explorationFloor = 0.05;
+        double initExploreProb = 1.0;
+        double exploreDecayRate = 0.998;
+        long totalGamesPlayed = gameCounter.getTotalGamesPlayed();
 
-        double explore = Math.max(explorationRateFloor, freshExplorationRate - (moveIdx * (freshExplorationRate - explorationRateFloor)) / explorationDecayRate);
-        double rollProb = this.getRandom().nextDouble();
-
-        if (rollProb <= explore) { //dice roll
-            expeditionCount += 1;
-            return true;
-        }
-        return false;
+        double currentExplorationProb = Math.max(explorationFloor, initExploreProb * Math.pow(exploreDecayRate, totalGamesPlayed));
+        return this.getRandom().nextDouble() <= currentExplorationProb;
     }
 
     /**
@@ -326,73 +319,113 @@ public class TetrisQAgent
      */
     @Override
     public double getReward(final GameView game) {
-        
-        Board board = game.getBoard();
+        Board b = game.getBoard();
         double reward = 0.0;
 
-        int holesBeneath = 0;
-        int spacesWithEmptySpaceBelow = 0;
-        int sandpaper = 0;
-        Integer[] individualColumHeights = new Integer[10];
+        int largestYVal = 22;
+        Coordinate highestCord = null;
+        Boolean isHighestCoordSet = false;
+
+        int heightDelta = 0; // y value of the lowest empty coordinate on the board
         
-        int yHeight = 22;
-        Coordinate highestCoordPos = null;
-        Boolean isHighestCoordPosSet = false;
-        int lowestEmptyYPos = -1;
+        int numSpacesBelowHighestMino = 0;
+        Integer[] colMax = new Integer[10];
 
-        //doing it backwards to be able to go column by column (dont question the syntax it makes sense in my head)
-        for(int y = 0; y < 22; y++){
-            for(int x = 0; x < 10; x++){
+        int spaceWithMinoBeneath = 0;
 
-                if(board.isCoordinateOccupied(x, y)){ 
-                    if(individualColumHeights[x] == null){
-                        individualColumHeights[x] = y;
+        int sandpaper = 0; // sum of the absolute differences in height between adjacent columns
+
+        double filledDensity = 0.0; // proportion of filled spaces to total spaces below the highest occupied space
+        int totalDensity = 0;
+
+        // parse through board to collect feature data
+        for (int y = 0; y < 22; y++) {
+            for (int x = 0; x < 10; x++) {
+                // occupied coordinate
+                if (b.isCoordinateOccupied(x, y)) { 
+                    // get the highest coordinate position
+                    if (isHighestCoordSet == false && highestCord == null) {
+                        highestCord = new Coordinate(x, y);
                     }
-                    if(!isHighestCoordPosSet){
-                        isHighestCoordPosSet = true;
-                        highestCoordPos = new Coordinate(x, y);
+                    // sets the max for the current column
+                    if (colMax[x] == null) {
+                        colMax[x] = y;
                     }
-                    if(y < 21 && !board.isCoordinateOccupied(x, y+1)){
-                        spacesWithEmptySpaceBelow += 1;
+                    // count number of floating coordindates
+                    if(y < 21 && !b.isCoordinateOccupied(x, y+1)){
+                        spaceWithMinoBeneath += 1;
                     }
+                    // count all filled coordinates below the highest and incriment total coordinates
+                    if(isHighestCoordSet){
+                        filledDensity += 1;
+                        totalDensity += 1;
+                    }
+
                 }
-                else{
-                    if(individualColumHeights[x] != null){
-                        holesBeneath += 1;
+
+                // empty coordinate
+                else if (!b.isCoordinateOccupied(x, y)) {
+                    // check if current column has an occupied space in a higher row
+                    if(colMax[x] != null) {
+                        numSpacesBelowHighestMino += 1;
                     }
-                    if(lowestEmptyYPos < y){
-                        lowestEmptyYPos = y;
+                    // set value of heightDelta to lowest found empty cord y value
+                    if (heightDelta < y) {
+                        heightDelta = y;
+                    }
+                    // count all total coordinates below the highest for total
+                    if (isHighestCoordSet == true) {
+                        totalDensity += 1;
                     }
                 }
             }
+            if (highestCord != null) {
+                isHighestCoordSet = true;
+            }
         }
-        if(highestCoordPos != null){
-            yHeight = highestCoordPos.getYCoordinate();
+
+        // set highestY
+        if (highestCord != null) {
+            largestYVal = highestCord.getYCoordinate();
         }
+
+        // set sandpaper
         for (int i = 0; i < 9; i++) {
             int cur = 22;
-            if(individualColumHeights[i] != null){
-                cur = individualColumHeights[i];
+            if (colMax[i] != null) {
+                cur = colMax[i];
             }
+
             int next = 22;
-            if(individualColumHeights[i+1] != null){
-                next = individualColumHeights[i+1];
+            if (colMax[i+1] != null) {
+                next = colMax[i+1];
             }
             sandpaper += Math.abs(cur - next);
         }
+
+        // set ptsEarned
         int ptsEarned = game.getScoreThisTurn();
-        lowestEmptyYPos = lowestEmptyYPos - yHeight;
 
-        // System.out.println("ptsEarned: " + ptsEarned);
-        // System.out.println("yHeight: " + yHeight);
-        // System.out.println("lowestEmptyYPos: " + lowestEmptyYPos);
-        // System.out.println("spacesWithEmptySpaceBelow: " + spacesWithEmptySpaceBelow);
-        // System.out.println("holesBeneath: " + holesBeneath);
-        // System.out.println("sandpaper: " + sandpaper);
-        // System.out.println("");
+        // set heightDelta
+        heightDelta = heightDelta - largestYVal;
 
-        reward = Math.pow((5 * ptsEarned),3) - ((holesBeneath * .5) + (lowestEmptyYPos * .2) + (spacesWithEmptySpaceBelow * .2) + (sandpaper * .1));
-        // reward = ((10 * ptsEarned) + yHeight) - (Math.pow(1-holesBeneath, 4) * ((spacesWithEmptySpaceBelow * .7) + (sandpaper * .3))); //version 2
+        // set filledDensity
+        if (filledDensity != 0.0) {
+            filledDensity = (filledDensity / totalDensity);
+        }
+
+        // prints for each feature data point
+        //System.out.println("ptsEarned: " + ptsEarned);
+        //System.out.println("largestYVal: " + largestYVal);
+        //System.out.println("filledDensity: " + filledDensity);
+        //System.out.println("numSpacesBelowHighestMino: " + numSpacesBelowHighestMino);
+        //System.out.println("heightDelta: " + heightDelta);
+        //System.out.println("spaceWithMinoBeneath: " + spaceWithMinoBeneath);
+        //System.out.println("sandpaper: " + sandpaper);
+
+
+        // reward = Math.pow((5 * ptsEarned),1.5) - ((spaceWithMinoBeneath * .5) + (lowestEmptyYPos * .2) + (numSpacesBelowHighestMino * .2) + (sandpaper * .1));
+        reward = (10 * ptsEarned + largestYVal) - (Math.pow(1-filledDensity, 4) * ((numSpacesBelowHighestMino * 7) + (sandpaper * 3)));
 
         return reward;
     }
