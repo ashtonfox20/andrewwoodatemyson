@@ -49,7 +49,7 @@ public class TetrisQAgent
 
     @Override
     public Model initQFunction() {
-        final int inputSize = 8; 
+        final int inputSize = 5; 
         final int hiddenDim = (int)Math.pow(inputSize, 2); //danger variable >:)
         final int outDim = 1; 
         Sequential qFunction = new Sequential();
@@ -77,85 +77,65 @@ public class TetrisQAgent
      */
     @Override
     public Matrix getQFunctionInput(final GameView game, final Mino potentialAction) {
-        Matrix grayGrid = null;
-        Matrix featureMatrix = Matrix.zeros(1, 8);
+        Matrix gameMatrix = null; 
+        Matrix featureMatrix = Matrix.zeros(1, 5);
+
         
-        int spaceWithMinoBeneath = 0;
-        int numSpacesBelowHighestMino = 0;//how many fuckups i mean empty spaces are below a mino space
+        int bumpiness = 0; // sum of the absolute differences in height between adjacent columns
+        Integer[] colHeights = new Integer[10];
+        int fullRows = 0; //number of complete rows
+        int emptyBelow = 0;
+        
+        int baseHeight = 22; //height of the tallest column
+        boolean isBaseHeightSet = false;
         int minoShape = -1;
         Mino.MinoType curMino = potentialAction.getType(); 
-        int minoDelta = 0;
-        int sandpaper = 0;//scalar for how smooth the board geography is
-        int valleyPeakDelta = -1;
-        
-        int baseHeight = 22;
-        boolean isBaseHeightSet = false;
-        int postPlacementHeight = 22;
-        boolean isPostPlacementHeightSet = false;
-        Integer[] individualColHeights = new Integer[10]; //objective and objectively important constants
 
         try{
-            grayGrid = game.getGrayscaleImage(potentialAction); //getgrayscaleimage my beloved
+            gameMatrix = game.getGrayscaleImage(potentialAction); //getgrayscaleimage my beloved
         }catch(Exception oops){
             System.out.println("NOOOOO!!!! THIS CANNOT BE!!!!!!");
             oops.printStackTrace();
             System.exit(-1);
         }
-        for(int x = 0; x < grayGrid.getShape().getNumRows(); x++ ){
-            for(int y = 0; y < grayGrid.getShape().getNumCols(); y++){
-                if(grayGrid.get(x, y) == 0.0){
-                    if(x > 0 && (grayGrid.get(x-1, y) != 0.0)){
-                        spaceWithMinoBeneath += 1;
-                    }
-                    if(individualColHeights[y] != null){
-                        numSpacesBelowHighestMino += 1;
-                    }
-                    if(valleyPeakDelta < x){
-                        valleyPeakDelta = x;
-                    }
-                }
-                if(grayGrid.get(x, y) == 1.0){
-                    if(individualColHeights[y] == null){
-                        individualColHeights[y] = x;
-                    }
-                    if(isPostPlacementHeightSet == false){
-                        isPostPlacementHeightSet = true;
-                        postPlacementHeight = x;
-                    }
-                }
-                if(grayGrid.get(x, y) == 0.5){
-                    if(individualColHeights[y] == null){
-                        individualColHeights[y] = x;
-                    }
-                    if(!isBaseHeightSet){
-                        isBaseHeightSet = true;
+        
+        for(int x = 0; x < gameMatrix.getShape().getNumRows(); x++ ){//grayscale matrix my love my only
+            boolean isFull = true;
+            for(int y = 0; y < gameMatrix.getShape().getNumCols(); y++){
+                if(gameMatrix.get(x, y) == 0.5 || gameMatrix.get(x, y) == 1.0){ //if the square is occupied
+                    if (isBaseHeightSet == false ){
                         baseHeight = x;
+                        isBaseHeightSet = true;
                     }
+                    if(colHeights[y] == null){ 
+                        colHeights[y] = x;
+                    }
+                    if(y == 9 && isFull == true){
+                        fullRows += 1;
+                    }
+                }
+                else if(gameMatrix.get(x, y) == 0.0){//if the square is empty
+                    if(colHeights[y] != null){
+                        emptyBelow += 1;
+                    }
+                    isFull = false;
                 }
             }
         }
-        int delta = baseHeight - postPlacementHeight;
-        if(delta > 0) {
-            minoDelta = delta;
-        }
-        else {
-            minoDelta = 0;
-        }   
 
-        // funky kong couldnt get me as hard as writing this did
         for (int i = 0; i < 9; i++) {
             int cur = 22;
-            if (individualColHeights[i] != null) {
-                cur = individualColHeights[i];
+            if (colHeights[i] != null) {
+                cur = colHeights[i];
             }
+
             int next = 22;
-            if (individualColHeights[i+1] != null) {
-                next = individualColHeights[i+1];
+            if (colHeights[i+1] != null) {
+                next = colHeights[i+1];
             }
-            sandpaper += Math.abs(cur - next);
+            bumpiness += Math.abs(cur - next);
         }
 
-        valleyPeakDelta = postPlacementHeight - valleyPeakDelta;
         if(curMino == Mino.MinoType.valueOf("I")){
             minoShape = 0;
         }
@@ -177,14 +157,11 @@ public class TetrisQAgent
         else if(curMino == Mino.MinoType.valueOf("Z")){
             minoShape = 6;
         }
-        featureMatrix.set(0, 0, spaceWithMinoBeneath);
-        featureMatrix.set(0, 1, baseHeight);
-        featureMatrix.set(0, 2, postPlacementHeight);
-        featureMatrix.set(0, 3, minoDelta);
-        featureMatrix.set(0, 4, sandpaper);
-        featureMatrix.set(0, 5, numSpacesBelowHighestMino);
-        featureMatrix.set(0, 6, valleyPeakDelta);
-        featureMatrix.set(0, 7, minoShape);
+        featureMatrix.set(0, 0, baseHeight);
+        featureMatrix.set(0, 1, bumpiness);
+        featureMatrix.set(0, 2, emptyBelow);
+        featureMatrix.set(0, 3, fullRows);
+        featureMatrix.set(0, 4, minoShape);
 
         return featureMatrix;
     }
@@ -207,12 +184,15 @@ public class TetrisQAgent
     @Override
     public boolean shouldExplore(final GameView game, final GameCounter gameCounter) {
 
+
+        int turnIdx = (int)gameCounter.getCurrentMoveIdx();// which turn # this is in a given game
+        int gameIdx = (int)gameCounter.getCurrentGameIdx();//which game # this is
+
         double explorationFloor = 0.05;
         double initExploreProb = 1.0;
-        double exploreDecayRate = 0.998;
-        long totalGamesPlayed = gameCounter.getTotalGamesPlayed();
+        double exploreDecayRate = 0.99 - (gameIdx * 0.001);
 
-        double currentExplorationProb = Math.max(explorationFloor, initExploreProb * Math.pow(exploreDecayRate, totalGamesPlayed));
+        double currentExplorationProb = Math.max(explorationFloor, initExploreProb - turnIdx * (initExploreProb - explorationFloor) / exploreDecayRate);
         return this.getRandom().nextDouble() <= currentExplorationProb;
     }
 
@@ -325,57 +305,38 @@ public class TetrisQAgent
         int largestYVal = 22;
         Coordinate highestCord = null;
         Boolean isHighestCoordSet = false;
-
-        int heightDelta = 0; // y value of the lowest empty coordinate on the board
         
         int numSpacesBelowHighestMino = 0;
         Integer[] colMax = new Integer[10];
 
-        int spaceWithMinoBeneath = 0;
-
         int sandpaper = 0; // sum of the absolute differences in height between adjacent columns
 
-        double filledDensity = 0.0; // proportion of filled spaces to total spaces below the highest occupied space
-        int totalDensity = 0;
+        int completedRows = 0;
 
         // parse through board to collect feature data
         for (int y = 0; y < 22; y++) {
+            boolean isFullRow = true;
             for (int x = 0; x < 10; x++) {
                 // occupied coordinate
                 if (b.isCoordinateOccupied(x, y)) { 
                     // get the highest coordinate position
-                    if (isHighestCoordSet == false && highestCord == null) {
+                    if (isHighestCoordSet == false) {
                         highestCord = new Coordinate(x, y);
+                        isHighestCoordSet = true;
                     }
                     // sets the max for the current column
                     if (colMax[x] == null) {
                         colMax[x] = y;
                     }
-                    // count number of floating coordindates
-                    if(y < 21 && !b.isCoordinateOccupied(x, y+1)){
-                        spaceWithMinoBeneath += 1;
-                    }
-                    // count all filled coordinates below the highest and incriment total coordinates
-                    if(isHighestCoordSet){
-                        filledDensity += 1;
-                        totalDensity += 1;
-                    }
-
+                    isFullRow = false;
                 }
-
                 // empty coordinate
                 else if (!b.isCoordinateOccupied(x, y)) {
-                    // check if current column has an occupied space in a higher row
                     if(colMax[x] != null) {
                         numSpacesBelowHighestMino += 1;
                     }
-                    // set value of heightDelta to lowest found empty cord y value
-                    if (heightDelta < y) {
-                        heightDelta = y;
-                    }
-                    // count all total coordinates below the highest for total
-                    if (isHighestCoordSet == true) {
-                        totalDensity += 1;
+                    if(x == 9 && isFullRow && isHighestCoordSet){
+                        completedRows += 1;
                     }
                 }
             }
@@ -406,13 +367,6 @@ public class TetrisQAgent
         // set ptsEarned
         int ptsEarned = game.getScoreThisTurn();
 
-        // set heightDelta
-        heightDelta = heightDelta - largestYVal;
-
-        // set filledDensity
-        if (filledDensity != 0.0) {
-            filledDensity = (filledDensity / totalDensity);
-        }
 
         // prints for each feature data point
         //System.out.println("ptsEarned: " + ptsEarned);
@@ -425,7 +379,9 @@ public class TetrisQAgent
 
 
         // reward = Math.pow((5 * ptsEarned),1.5) - ((spaceWithMinoBeneath * .5) + (lowestEmptyYPos * .2) + (numSpacesBelowHighestMino * .2) + (sandpaper * .1));
-        reward = (10 * ptsEarned + largestYVal) - (Math.pow(1-filledDensity, 4) * ((numSpacesBelowHighestMino * 7) + (sandpaper * 3)));
+        // reward = (10 * ptsEarned + largestYVal) - (Math.pow(1-filledDensity, 4) * ((numSpacesBelowHighestMino * 7) + (sandpaper * 3)));
+        reward = ((50 * ptsEarned) + (10 * completedRows)) - ((sandpaper + numSpacesBelowHighestMino) / (double)largestYVal);
+
 
         return reward;
     }
