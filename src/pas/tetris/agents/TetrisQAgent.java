@@ -380,7 +380,7 @@ public class TetrisQAgent
 
         // reward = Math.pow((5 * ptsEarned),1.5) - ((spaceWithMinoBeneath * .5) + (lowestEmptyYPos * .2) + (numSpacesBelowHighestMino * .2) + (sandpaper * .1));
         // reward = (10 * ptsEarned + largestYVal) - (Math.pow(1-filledDensity, 4) * ((numSpacesBelowHighestMino * 7) + (sandpaper * 3)));
-        reward = ((50 * ptsEarned) + (10 * completedRows)) - ((sandpaper + numSpacesBelowHighestMino) / (double)largestYVal);
+        reward = ((50 * ptsEarned) + (10 * completedRows)) - ((sandpaper * 3 + numSpacesBelowHighestMino * 5) / (double)largestYVal);
 
 
         return reward;
